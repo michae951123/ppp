@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>新竹微縮城市 3D 互動地圖</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: sans-serif; background: #0b192c; }
+        #canvas-container { width: 100vw; height: 100vh; display: block; }
+        
+        /* 老師風格的高密度 3D 浮動標籤看板 */
+        .station-label {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.95);
+            border: 2px solid #2563eb;
+            padding: 4px 10px;
+            border-radius: 6px;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.25);
+            font-size: 12px;
+            font-weight: bold;
+            color: #1e3a8a;
+            cursor: pointer;
+            pointer-events: auto;
+            transform: translate(-50%, -100%);
+            white-space: nowrap;
+            transition: transform 0.2s, background 0.2s;
+        }
+        .station-label:hover {
+            background: #eff6ff;
+            transform: translate(-50%, -105%) scale(1.05);
+            border-color: #1d4ed8;
+        }
+        .station-label .sub { font-size: 10px; color: #64748b; font-weight: normal; }
+
+        /* 主角與 NPC 專屬頭頂標籤 */
+        #player-badge {
+            position: absolute; background: #f97316; color: white; padding: 3px 8px; border-radius: 12px;
+            font-size: 11px; font-weight: bold; box-shadow: 0 2px 8px rgba(0,0,0,0.3); pointer-events: none;
+            transform: translate(-50%, -100%); white-space: nowrap; border: 2px solid #fff;
+        }
+        #lumberjack-badge {
+            position: absolute; background: #dc2626; color: white; padding: 2px 6px; border-radius: 10px;
+            font-size: 10px; font-weight: bold; box-shadow: 0 2px 6px rgba(0,0,0,0.3); pointer-events: none;
+            transform: translate(-50%, -100%); white-space: nowrap; border: 1px solid #fff;
+        }
+        #gardener-badge {
+            position: absolute; background: #16a34a; color: white; padding: 2px 6px; border-radius: 10px;
+            font-size: 10px; font-weight: bold; box-shadow: 0 2px 6px rgba(0,0,0,0.3); pointer-events: none;
+            transform: translate(-50%, -100%); white-space: nowrap; border: 1px solid #fff;
+        }
+
+        /* UI 控制面板 */
+        #ui-layer {
+            position: absolute; top: 20px; left: 20px; color: white; pointer-events: none;
+        }
+        .badge {
+            background: rgba(0,0,0,0.65); padding: 8px 14px; border-radius: 20px;
+            font-size: 14px; border: 1px solid rgba(255,255,255,0.2); margin-bottom: 8px; display: inline-block;
+        }
+        #controls-hint {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.8); color: #fff; padding: 10px 20px; border-radius: 10px;
+            font-size: 13px; text-align: center; pointer-events: auto; cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+        }
+
+        /* 點擊看板後跳出的詳細資訊彈跳視窗 */
+        #info-modal {
+            display: none;
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: white; color: #1e293b; padding: 25px 30px; border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.4); width: 360px; z-index: 100;
+            border-top: 6px solid #2563eb; text-align: left;
+        }
+        #info-modal h2 { margin-top: 0; color: #1e3a8a; font-size: 18px; }
+        #info-modal p { font-size: 14px; color: #475569; line-height: 1.6; }
+        .modal-buttons { margin-top: 15px; display: flex; justify-content: space-between; align-items: center; }
+        #info-modal a.map-btn {
+            background: #0284c7; color: white; padding: 8px 14px; text-decoration: none;
+            border-radius: 6px; font-size: 13px; font-weight: bold; display: inline-block;
+        }
+        #info-modal a.map-btn:hover { background: #0369a1; }
+        #info-modal button.close-btn {
+            background: #cbd5e1; color: #334155; border: none; padding: 8px 14px;
+            border-radius: 6px; font-weight: bold; cursor: pointer;
+        }
+        #info-modal button.close-btn:hover { background: #94a3b8; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <!-- 頭頂身分標籤 -->
+    <div id="player-badge">我 市民</div>
+    <div id="lumberjack-badge">🪓 伐木工</div>
+    <div id="gardener-badge">🌱 園丁(種樹)</div>
+
+    <div id="ui-layer">
+        <div class="badge">🏙️ 新竹微縮城市進度: <span id="progress">0</span>/12 區塊完成</div><br>
+        <div class="badge">💡 模式: <span id="mode-text">白天都市</span> | 視角: <span id="cam-mode">跟隨主角模式</span> (按 V 鍵切換全景)</div>
+    </div>
+
+    <!-- 浮動標籤容器 -->
+    <div id="labels-container"></div>
+
+    <!-- 點擊看板彈跳視窗 -->
+    <div id="info-modal">
+        <h2 id="modal-title">標題</h2>
+        <p id="modal-desc">內容說明...</p>
+        <div class="modal-buttons">
+            <a id="modal-map-link" href="#" target="_blank" class="map-btn">📍 查看 Google Map 實景</a>
+            <button class="close-btn" onclick="closeModal()">關閉視窗</button>
+        </div>
+    </div>
+
+    <div id="controls-hint">
+        🎮 操作：<b>W A S D</b> 移動 | 按 <b>V</b> 切換「跟隨主角 / 360度全景」 | 按 <b>C</b> 切換日夜點燈
+    </div>
+
+    <script>
+        // --- 1. 場景初始化 ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb);
+        scene.fog = new THREE.FogExp2(0x87ceeb, 0.005);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 40, 50);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        container.appendChild(renderer.domElement);
+
+        // 全景控制器
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.enabled = false; // 預設為跟隨主角模式
+
+        // --- 2. 光影設定 ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xfff8e7, 1.0);
+        dirLight.position.set(50, 70, 50);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // --- 3. 陸地與道路 ---
+        const groundGeo = new THREE.BoxGeometry(120, 1.5, 120);
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x4ade80, roughness: 0.8, flatShading: true });
+        const cityGround = new THREE.Mesh(groundGeo, groundMat);
+        cityGround.position.y = -0.75;
+        cityGround.receiveShadow = true;
+        scene.add(cityGround);
+
+        const roadMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.9 });
+        const road1 = new THREE.Mesh(new THREE.BoxGeometry(120, 1.52, 6), roadMat);
+        road1.position.y = -0.74;
+        scene.add(road1);
+        const road2 = new THREE.Mesh(new THREE.BoxGeometry(6, 1.52, 120), roadMat);
+        road2.position.y = -0.74;
+        scene.add(road2);
+
+        // --- 4. 12大新竹站點資料 ---
+        const stations = [
+            { name: "01 新竹市政府", sub: "古蹟行政中樞", pos: { x: 0, z: -35 }, desc: "新竹市最具代表性的日治時期巴洛克式古蹟建築，也是新竹市的行政與文化核心。", query: "新竹市政府" },
+            { name: "02 新竹科學園區", sub: "高科技重鎮與AI", pos: { x: 35, z: -30 }, desc: "台灣半導體與高科技產業的發源地，結合智慧化微縮聯網與大數據分析。", query: "新竹科學園區" },
+            { name: "03 十七公里海岸線", sub: "觀海步道與自行車道", pos: { x: 45, z: 0 }, desc: "新竹美麗的濱海休閒廊帶，沿途有紅樹林生態與絕美夕陽景致。", query: "新竹十七公里海岸線" },
+            { name: "04 清華與陽明交大", sub: "學術重鎮與人才庫", pos: { x: 35, z: 30 }, desc: "新竹頂尖學府匯集地，提供資訊管理與前瞻科技研討的搖籃。", query: "國立清華大學" },
+            { name: "05 城隍廟美食街", sub: "在地小吃與肉圓貢丸", pos: { x: 0, z: 40 }, desc: "遠近馳名的新竹美食聚集地，以貢丸、米粉與肉圓聞名全台。", query: "新竹都城隍廟" },
+            { name: "06 新竹公園綠地", sub: "休閒勝地與藝文", pos: { x: -35, z: 30 }, desc: "新竹市歷史最悠久的公園，每逢假日市民野餐與漫步的首選。", query: "新竹公園" },
+            { name: "07 麗池公園水景", sub: "日式庭園與九曲橋", pos: { x: -45, z: 0 }, desc: "充滿濃厚日式風情的湖畔景致，結合古色古香的涼亭與水鏡倒影。", query: "新竹麗池公園" },
+            { name: "08 東門城迎曦門", sub: "歷史古蹟與護城河", pos: { x: -35, z: -30 }, desc: "新竹古城僅存的城門，結合現代市民廣場與地下藝文空間。", query: "新竹東門城迎曦門" },
+            { name: "11 青草湖生態區", sub: "水庫風景與微森林", pos: { x: 18, z: -15 }, desc: "新竹著名的風景名勝，四周環繞綠意盎然的樹林與環湖步道。", query: "新竹青草湖" },
+            { name: "13 十八尖山步道", sub: "都市綠肺與芬多精", pos: { x: 18, z: 15 }, desc: "新竹市民休閒健行的最佳去處，四季花木扶疏。", query: "新竹十八尖山" },
+            { name: "16 新竹巨城購物中心", sub: "商業休閒與潮流", pos: { x: -18, z: -15 }, desc: "竹苗地區規模最大的休閒購物與生活娛樂中心。", query: "Big City遠東巨城購物中心" },
+            { name: "17 新竹動物園", sub: "全台最老同樂天堂", pos: { x: -18, z: 15 }, desc: "強調無籠設計的友善動物園，充滿在地人的童年回憶。", query: "新竹市立動物園" }
+        ];
+
+        // --- 5. 城市樹木管理系統 ---
+        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.9, flatShading: true });
+        const leafColors = [0x22c55e, 0x16a34a, 0x15803d, 0x4ade80];
+        const treeGroups = [];
+
+        function createCityTree(x, z, scale = 1.0) {
+            const treeGroup = new THREE.Group();
+            treeGroup.position.set(x, 0, z);
+            const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18 * scale, 0.3 * scale, 1.8 * scale, 6), trunkMat);
+            trunk.position.y = 0.9 * scale;
+            trunk.castShadow = true;
+            treeGroup.add(trunk);
+
+            const color = leafColors[Math.floor(Math.random() * leafColors.length)];
+            const crownMat = new THREE.MeshStandardMaterial({ color: color, roughness: 0.75, flatShading: true });
+            const crown = new THREE.Mesh(new THREE.ConeGeometry(1.2 * scale, 2.2 * scale, 5), crownMat);
+            crown.position.y = 2.2 * scale;
+            crown.castShadow = true;
+            treeGroup.add(crown);
+
+            scene.add(treeGroup);
+            treeGroups.push(treeGroup);
+        }
+
+        for (let i = 0; i < 40; i++) {
+            const tx = (Math.random() - 0.5) * 100;
+            const tz = (Math.random() - 0.5) * 100;
+            if (Math.abs(tx) > 6 || Math.abs(tz) > 6) {
+                createCityTree(tx, tz, 0.8 + Math.random() * 0.5);
+            }
+        }
+
+        // --- 6. 路燈與建築物 ---
+        const lampMeshes = [];
+        const poleMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.5 });
+        const bulbMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.3 });
+
+        function createStreetLamp(x, z) {
+            const lampGroup = new THREE.Group();
+            const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 2.2, 6), poleMat);
+            pole.position.y = 1.1;
+            pole.castShadow = true;
+            lampGroup.add(pole);
+
+            const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 12), bulbMat);
+            bulb.position.y = 2.2;
+            lampGroup.add(bulb);
+
+            lampGroup.position.set(x, 0, z);
+            scene.add(lampGroup);
+            lampMeshes.push(bulb);
+        }
+
+        for (let i = -50; i <= 50; i += 12) {
+            if (Math.abs(i) > 4) {
+                createStreetLamp(i, 4.2);
+                createStreetLamp(i, -4.2);
+                createStreetLamp(4.2, i);
+                createStreetLamp(-4.2, i);
+            }
+        }
+
+        const labelsContainer = document.getElementById('labels-container');
+        const labelDivs = stations.map((st, idx) => {
+            const div = document.createElement('div');
+            div.className = 'station-label';
+            div.innerHTML = `${st.name}<br><span class="sub">${st.sub}</span>`;
+            
+            div.onclick = () => {
+                playerPos.x = st.pos.x;
+                playerPos.z = st.pos.z + 3;
+                unlockedCount = Math.max(unlockedCount, idx + 1);
+                document.getElementById('progress').innerText = unlockedCount;
+
+                document.getElementById('modal-title').innerText = st.name + " - " + st.sub;
+                document.getElementById('modal-desc').innerText = st.desc;
+                
+                const encodedQuery = encodeURIComponent(st.query);
+                document.getElementById('modal-map-link').href = `https://www.google.com/maps/search/?api=1&query=${encodedQuery}`;
+                
+                document.getElementById('info-modal').style.display = 'block';
+            };
+
+            labelsContainer.appendChild(div);
+            return div;
+        });
+
+        function closeModal() {
+            document.getElementById('info-modal').style.display = 'none';
+        }
+
+        const buildingMeshes = [];
+        stations.forEach((st, idx) => {
+            const bGroup = new THREE.Group();
+            bGroup.position.set(st.pos.x, 0, st.pos.z);
+            
+            const houseMat = new THREE.MeshStandardMaterial({ color: idx % 2 === 0 ? 0x3b82f6 : 0x0ea5e9, roughness: 0.7, flatShading: true });
+            const base = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.8, 2.6), houseMat);
+            base.position.y = 0.9;
+            base.castShadow = true;
+            bGroup.add(base);
+
+            const roofMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.8, flatShading: true });
+            const roof = new THREE.Mesh(new THREE.ConeGeometry(2.1, 1.3, 4), roofMat);
+            roof.position.y = 2.35;
+            roof.rotation.y = Math.PI / 4;
+            bGroup.add(roof);
+
+            scene.add(bGroup);
+            buildingMeshes.push({ houseMat, base });
+        });
+
+        // --- 7. Q 版人偶生成函式 ---
+        function createQChar(clothesColorHex) {
+            const group = new THREE.Group();
+            const skinMat = new THREE.MeshStandardMaterial({ color: 0xffdbac, roughness: 0.8 });
+            const clothesMat = new THREE.MeshStandardMaterial({ color: clothesColorHex, roughness: 0.8 });
+            const hairMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
+            const limbMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.8 });
+            const bagMat = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.8 });
+
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 16, 16), skinMat);
+            head.position.y = 0.95;
+            head.castShadow = true;
+            group.add(head);
+
+            const hair = new THREE.Mesh(new THREE.SphereGeometry(0.33, 16, 16, 0, Math.PI * 2, 0, Math.PI * 0.5), hairMat);
+            hair.position.y = 1.0;
+            group.add(hair);
+
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.5, 0.25), clothesMat);
+            body.position.y = 0.5;
+            body.castShadow = true;
+            group.add(body);
+
+            const backpack = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.35, 0.15), bagMat);
+            backpack.position.set(0, 0.5, -0.18);
+            group.add(backpack);
+
+            const leftLeg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.32, 0.12), limbMat);
+            leftLeg.position.set(-0.1, 0.16, 0);
+            group.add(leftLeg);
+
+            const rightLeg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.32, 0.12), limbMat);
+            rightLeg.position.set(0.1, 0.16, 0);
+            group.add(rightLeg);
+
+            return { group, leftLeg, rightLeg };
+        }
+
+        // 主角
+        const playerChar = createQChar(0x2563eb);
+        scene.add(playerChar.group);
+        let playerPos = { x: 0, z: -10 };
+        let playerAngle = 0;
+
+        // 🪓 伐木工 NPC
+        const lumberjack = createQChar(0xdc2626);
+        lumberjack.group.position.set(15, 0, 15);
+        scene.add(lumberjack.group);
+        let ljPos = { x: 15, z: 15 }, ljTarget = { x: 0, z: 0 }, ljState = "WALKING", ljTimer = 0;
+
+        // 🌱 園丁 NPC
+        const gardener = createQChar(0x16a34a);
+        gardener.group.position.set(-15, 0, -15);
+        scene.add(gardener.group);
+        let gdPos = { x: -15, z: -15 }, gdTarget = { x: 0, z: 0 }, gdState = "WALKING", gdTimer = 0;
+
+        function pickLjTarget() { ljTarget.x = (Math.random() - 0.5) * 80; ljTarget.z = (Math.random() - 0.5) * 80; }
+        function pickGdTarget() { gdTarget.x = (Math.random() - 0.5) * 80; gdTarget.z = (Math.random() - 0.5) * 80; }
+        pickLjTarget(); pickGdTarget();
+
+        // 一般 NPC
+        const npcs = [];
+        stations.forEach((st) => {
+            for (let i = 0; i < 2; i++) {
+                const npc = createQChar(0xf59e0b);
+                const startX = st.pos.x + (Math.random() - 0.5) * 6;
+                const startZ = st.pos.z + (Math.random() - 0.5) * 6;
+                npc.group.position.set(startX, 0, startZ);
+                scene.add(npc.group);
+                npcs.push({ ...npc, centerX: st.pos.x, centerZ: st.pos.z, x: startX, z: startZ, targetX: startX, targetZ: startZ, speed: 1.2, timer: 0 });
+            }
+        });
+
+        // --- 8. 互動控制 (視角切換與日夜) ---
+        let isOrbitMode = false; // 預設跟隨主角
+        const keys = {};
+        window.addEventListener('keydown', (e) => {
+            keys[e.key.toLowerCase()] = true;
+            if (e.key.toLowerCase() === 'c') toggleNightMode();
+            if (e.key.toLowerCase() === 'v') toggleViewMode();
+        });
+        window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+
+        function toggleViewMode() {
+            isOrbitMode = !isOrbitMode;
+            controls.enabled = isOrbitMode;
+            if (isOrbitMode) {
+                controls.target.copy(playerChar.group.position);
+                document.getElementById('cam-mode').innerText = "360度全景模式 (可滑鼠縮放/旋轉)";
+            } else {
+                document.getElementById('cam-mode').innerText = "跟隨主角模式";
+            }
+        }
+
+        let isNight = false;
+        function toggleNightMode() {
+            isNight = !isNight;
+            if (isNight) {
+                scene.background.set(0x050b18);
+                scene.fog.color.set(0x050b18);
+                ambientLight.intensity = 0.25;
+                dirLight.intensity = 0.2;
+                dirLight.color.set(0x38bdf8);
+                buildingMeshes.forEach(b => { b.houseMat.emissive.set(0xfde047); b.houseMat.emissiveIntensity = 0.7; });
+                lampMeshes.forEach(bulb => { bulb.material.color.set(0xfef08a); bulb.material.emissive.set(0xfde047); bulb.material.emissiveIntensity = 1.0; });
+                document.getElementById('mode-text').innerText = "夜晚點燈城市";
+            } else {
+                scene.background.set(0x87ceeb);
+                scene.fog.color.set(0x87ceeb);
+                ambientLight.intensity = 0.7;
+                dirLight.intensity = 1.0;
+                dirLight.color.set(0xfff8e7);
+                buildingMeshes.forEach(b => { b.houseMat.emissive.set(0x000000); b.houseMat.emissiveIntensity = 0; });
+                lampMeshes.forEach(bulb => { bulb.material.color.set(0x94a3b8); bulb.material.emissive.set(0x000000); bulb.material.emissiveIntensity = 0; });
+                document.getElementById('mode-text').innerText = "白天都市";
+            }
+        }
+
+        // --- 9. 動態渲染迴圈 ---
+        const clock = new THREE.Clock();
+        let unlockedCount = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            let moveSpeed = 5;
+            let moving = false;
+            let dx = 0, dz = 0;
+
+            if (keys['w'] || keys['arrowup']) { dz -= 1; moving = true; }
+            if (keys['s'] || keys['arrowdown']) { dz += 1; moving = true; }
+            if (keys['a'] || keys['arrowleft']) { dx -= 1; moving = true; }
+            if (keys['d'] || keys['arrowright']) { dx += 1; moving = true; }
+
+            if (moving) {
+                playerPos.x += dx * moveSpeed * delta;
+                playerPos.z += dz * moveSpeed * delta;
+                playerPos.x = Math.max(-55, Math.min(55, playerPos.x));
+                playerPos.z = Math.max(-55, Math.min(55, playerPos.z));
+
+                playerChar.group.position.set(playerPos.x, 0, playerPos.z);
+                playerAngle = Math.atan2(dx, dz);
+                playerChar.group.rotation.y = playerAngle;
+
+                playerChar.leftLeg.rotation.x = Math.sin(time * 15) * 0.6;
+                playerChar.rightLeg.rotation.x = -Math.sin(time * 15) * 0.6;
+
+                stations.forEach((st, idx) => {
+                    const dist = Math.hypot(playerPos.x - st.pos.x, playerPos.z - st.pos.z);
+                    if (dist < 3.5 && unlockedCount <= idx) {
+                        unlockedCount = Math.max(unlockedCount, idx + 1);
+                        document.getElementById('progress').innerText = unlockedCount;
+                    }
+                });
+            } else {
+                playerChar.leftLeg.rotation.x = 0;
+                playerChar.rightLeg.rotation.x = 0;
+            }
+
+            // --- 🪓 伐木工 AI ---
+            if (ljState === "WALKING") {
+                const tdx = ljTarget.x - ljPos.x, tdz = ljTarget.z - ljPos.z, dist = Math.hypot(tdx, tdz);
+                if (dist > 1.0) {
+                    ljPos.x += (tdx / dist) * 2.0 * delta;
+                    ljPos.z += (tdz / dist) * 2.0 * delta;
+                    lumberjack.group.position.set(ljPos.x, 0, ljPos.z);
+                    lumberjack.group.rotation.y = Math.atan2(tdx, tdz);
+                    lumberjack.leftLeg.rotation.x = Math.sin(time * 12) * 0.5;
+
+                    treeGroups.forEach((t) => {
+                        if (t.position.distanceTo(lumberjack.group.position) < 2.5) { ljState = "CHOPPING"; ljTimer = 1.5; }
+                    });
+                } else { pickLjTarget(); }
+            } else if (ljState === "CHOPPING") {
+                ljTimer -= delta;
+                lumberjack.leftLeg.rotation.x = Math.sin(time * 30) * 0.4;
+                if (ljTimer <= 0) {
+                    let closest = -1, minDist = 999;
+                    treeGroups.forEach((t, i) => {
+                        const d = t.position.distanceTo(lumberjack.group.position);
+                        if (d < minDist) { minDist = d; closest = i; }
+                    });
+                    if (closest !== -1 && minDist < 3.0) {
+                        scene.remove(treeGroups[closest]);
+                        treeGroups.splice(closest, 1);
+                    }
+                    ljState = "WALKING"; pickLjTarget();
+                }
+            }
+
+            // --- 🌱 園丁 AI ---
+            if (gdState === "WALKING") {
+                const tdx = gdTarget.x - gdPos.x, tdz = gdTarget.z - gdPos.z, dist = Math.hypot(tdx, tdz);
+                if (dist > 1.0) {
+                    gdPos.x += (tdx / dist) * 2.0 * delta;
+                    gdPos.z += (tdz / dist) * 2.0 * delta;
+                    gardener.group.position.set(gdPos.x, 0, gdPos.z);
+                    gardener.group.rotation.y = Math.atan2(tdx, tdz);
+                    gardener.rightLeg.rotation.x = Math.sin(time * 12) * 0.5;
+
+                    if (Math.random() < 0.01 && treeGroups.length < 60) { gdState = "PLANTING"; gdTimer = 1.5; }
+                } else { pickGdTarget(); }
+            } else if (gdState === "PLANTING") {
+                gdTimer -= delta;
+                gardener.rightLeg.rotation.x = Math.sin(time * 30) * 0.4;
+                if (gdTimer <= 0) {
+                    createCityTree(gdPos.x + (Math.random() - 0.5) * 2, gdPos.z + (Math.random() - 0.5) * 2, 1.0);
+                    gdState = "WALKING"; pickGdTarget();
+                }
+            }
+
+            // 視角切換處理
+            if (isOrbitMode) {
+                controls.update();
+            } else {
+                camera.position.x = playerChar.group.position.x;
+                camera.position.z = playerChar.group.position.z + 18;
+                camera.position.y = 14;
+                camera.lookAt(playerChar.group.position.x, playerChar.group.position.y + 1, playerChar.group.position.z);
+            }
+
+            // 更新標籤位置
+            function updateBadge(charGroup, badgeId) {
+                const vector = new THREE.Vector3(charGroup.position.x, 2.2, charGroup.position.z);
+                vector.project(camera);
+                const x = (vector.x *  .5 + .5) * window.innerWidth;
+                const y = (vector.y * -.5 + .5) * window.innerHeight;
+                const el = document.getElementById(badgeId);
+                el.style.left = `${x}px`;
+                el.style.top = `${y}px`;
+                el.style.display = vector.z < 1 ? 'block' : 'none';
+            }
+            updateBadge(playerChar.group, 'player-badge');
+            updateBadge(lumberjack.group, 'lumberjack-badge');
+            updateBadge(gardener.group, 'gardener-badge');
+
+            stations.forEach((st, idx) => {
+                const vector = new THREE.Vector3(st.pos.x, 3.5, st.pos.z);
+                vector.project(camera);
+                const x = (vector.x *  .5 + .5) * window.innerWidth;
+                const y = (vector.y * -.5 + .5) * window.innerHeight;
+                labelDivs[idx].style.left = `${x}px`;
+                labelDivs[idx].style.top = `${y}px`;
+                labelDivs[idx].style.display = vector.z < 1 ? 'block' : 'none';
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
